@@ -39,12 +39,14 @@ import time
 from python_qt_binding import loadUi
 from python_qt_binding.QtCore import Qt, Slot, qWarning
 from python_qt_binding.QtGui import QIcon
-from python_qt_binding.QtWidgets import QMenu, QTreeWidgetItem, QWidget
+from python_qt_binding.QtWidgets import QFileDialog, QMenu, QTreeWidgetItem, QWidget
 
 import rospkg
 import rospy
 import genpy
 import rosservice
+import roslib.message
+import rosbag
 
 from rqt_py_common.extended_combo_box import ExtendedComboBox
 
@@ -178,11 +180,76 @@ class ServiceCallerWidget(QWidget):
             self._service_info['expressions'][topic_name] = new_value
             #qDebug('ServiceCaller.request_tree_widget_itemChanged(): %s expression: %s' % (topic_name, new_value))
 
+    def get_service_class_from_tree(self, request):
+        item = self.request_tree_widget.topLevelItem(0)
+        cc = item.childCount()
+        for i in range(cc):
+            setattr(request, item.child(i).text(0), self._recursive_message_from_tree(item.child(i)))
+
+    def _recursive_message_from_tree(self, item):
+        cc = item.childCount()
+
+        if item.text(1)[-2:] == "[]":
+            if (cc < 1):
+                msg = []
+                return msg
+            else:
+                msg = []
+                for i in range(cc):
+                    subtype = self._recursive_message_from_tree(item.child(i))
+                    msg.append(subtype)
+                return msg
+        else:
+            try:
+                msg = roslib.message.get_message_class(item.text(1))()
+            except ValueError:
+                if item.text(1) == "string":
+                    if item.text(2) != str("''"):
+                        msg = str(item.text(2))
+                    else: 
+                        msg = ""
+                elif item.text(1) == "float64":
+                    msg = float(item.text(2))
+                elif item.text(1) == "int32" or item.text(1) == "int8":
+                    msg = int(item.text(2))
+                elif item.text(1) == "uint32" or item.text(1) == "uint8":
+                    msgt = int(item.text(2))
+                    if (msgt < 0):
+                        msg = 0
+                    else:
+                        msg = msgt
+                elif item.text(1) == "bool":
+                    msg = bool(item.text(2))
+        for i in range(cc):
+            subtype = self._recursive_message_from_tree(item.child(i))
+            setattr(msg, item.child(i).text(0), subtype)
+        return msg
+
     def fill_message_slots(self, message, topic_name, expressions, counter):
         if not hasattr(message, '__slots__'):
             return
         for slot_name in message.__slots__:
             slot_key = topic_name + '/' + slot_name
+            vec_found = True
+            i = 0
+            while (vec_found):
+                vec_found = False
+                slotstr = slot_key + "[" + str(i) + "]"
+                # slotnamestr = slot_name + "[" + str(i) + "]"
+                for key in expressions:
+                    inkey = (slotstr in key)
+                    if inkey and vec_found == False:
+                        vec_found = True
+                        # for x in message._slot_types:
+                            # print x
+                        a = message.__slots__.index(slot_name)
+                        vector_type = message._slot_types[a][:-2]
+                        msg = roslib.message.get_message_class(vector_type)()
+                        self.fill_message_slots(msg, slotstr, expressions, 0)
+                        tmp_vec = getattr(message, slot_name)
+                        tmp_vec.append(msg)
+                        setattr(message, slot_name, tmp_vec)
+                i = i+1
 
             # if no expression exists for this slot_key, continue with it's child slots
             if slot_key not in expressions:
@@ -199,7 +266,7 @@ class ServiceCallerWidget(QWidget):
                 slot_type = slot._type
             else:
                 slot_type = type(slot)
-
+            
             self._eval_locals['i'] = counter
             value = self._evaluate_expression(expression, slot_type)
             if value is not None:
@@ -238,6 +305,10 @@ class ServiceCallerWidget(QWidget):
 
         request = self._service_info['service_class']._request_class()
         self.fill_message_slots(request, self._service_info['service_name'], self._service_info['expressions'], self._service_info['counter'])
+
+        print request
+        # self.get_service_class_from_tree(request)
+
         try:
             response = self._service_info['service_proxy'](request)
         except rospy.ServiceException as e:
@@ -273,15 +344,60 @@ class ServiceCallerWidget(QWidget):
         menu = QMenu(self)
         action_item_expand = menu.addAction(QIcon.fromTheme('zoom-in'), "Expand All Children")
         action_item_collapse = menu.addAction(QIcon.fromTheme('zoom-out'), "Collapse All Children")
+
+        if item.text(1)[-2:] == "[]":
+            action_item_add_child = menu.addAction(QIcon.fromTheme('list-add'), "Add Child")
+        else:
+            action_item_save = menu.addAction(QIcon.fromTheme('document-save'), "Save message")
+            action_item_load = menu.addAction(QIcon.fromTheme('document-open'), "Load message")
+
+        if item.parent() != None and item.parent().text(1)[-2:] == "[]":
+            action_item_remove_child = menu.addAction(QIcon.fromTheme('list-remove'), "Remove")
+
         action = menu.exec_(global_pos)
 
         # evaluate user action
         if action in (action_item_expand, action_item_collapse):
             expanded = (action is action_item_expand)
-
             def recursive_set_expanded(item):
                 item.setExpanded(expanded)
                 for index in range(item.childCount()):
                     recursive_set_expanded(item.child(index))
             recursive_set_expanded(item)
 
+        if item.text(1)[-2:] == "[]":
+            if action == action_item_add_child:
+
+                pathname = ""
+                prnt = item.parent()
+                while(prnt):
+                    pathname = prnt.text(0) + "/" + pathname
+                    prnt = prnt.parent()
+                msg = roslib.message.get_message_class(item.text(1)[:-2])()
+                name_str = pathname + item.text(0) + "[" + str(item.childCount()) + "]"
+                child_item = self._recursive_create_widget_items(item, name_str, item.text(1)[:-2], msg)
+                item.addChild(child_item)
+        else:
+            if action == action_item_save:
+                if item.parent() == None:
+                    msg = self._service_info['service_class']._request_class()
+                    self.get_service_class_from_tree(msg)
+                else:
+                    msg = self._recursive_message_from_tree(item)
+                filename = QFileDialog.getSaveFileName(self, self.tr('Save selected message to file...'), '.', self.tr('Bag files {.bag} (*.bag)'))
+                if filename[0] != '':
+                    with rosbag.Bag(filename[0], 'w') as outbag:
+                        outbag.write('rqt_service_caller', msg, rospy.Time.now())
+            elif action == action_item_load:
+                filename = QFileDialog.getOpenFileName(self, self.tr('Load from File'), '.', self.tr('Bag files {.bag} (*.bag)'))
+                with rosbag.Bag(filename[0], 'r') as bag:
+                    for topic, msg, t in bag.read_messages(topics=['rqt_service_caller']):
+                        if msg._type != item.text(1):
+                            qWarning('Types do not match! Should be: %s but is: %s' % (item.text(1), msg._type))
+                            break
+                        qWarning('Loading files not yet supported!')
+
+        if item.parent() != None and item.parent().text(1)[-2:] == "[]":
+            if action == action_item_remove_child:
+                qWarning('Removing not yet supported!')
+                # print "remove + update other names?"
