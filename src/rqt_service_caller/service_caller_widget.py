@@ -225,6 +225,26 @@ class ServiceCallerWidget(QWidget):
             setattr(msg, item.child(i).text(0), subtype)
         return msg
 
+    def get_message_by_name(self, message_name):
+        try:
+            msg = roslib.message.get_message_class(message_name)()
+        except ValueError:
+            if message_name == "string":
+                msg = str()
+            elif message_name == "float64":
+                msg = float()
+            elif message_name == "int32" or message_name == "int8":
+                msg = int()
+            elif message_name == "uint32" or message_name == "uint8":
+                msg = int()
+            elif message_name == "bool":
+                msg = bool()
+        return msg
+
+    def fill_standard_message(self, msg, slotkey, expressions):
+        if slotkey in expressions:
+            return expressions[slotkey]
+
     def fill_message_slots(self, message, topic_name, expressions, counter):
         if not hasattr(message, '__slots__'):
             return
@@ -244,8 +264,26 @@ class ServiceCallerWidget(QWidget):
                             # print x
                         a = message.__slots__.index(slot_name)
                         vector_type = message._slot_types[a][:-2]
-                        msg = roslib.message.get_message_class(vector_type)()
-                        self.fill_message_slots(msg, slotstr, expressions, 0)
+                        # msg = roslib.message.get_message_class(vector_type)()
+                        msg = []
+                        if vector_type == "string":
+                            msg = str()
+                            msg = self.fill_standard_message(msg, slotstr, expressions)
+                        elif vector_type == "float64":
+                            msg = float()
+                            msg = self.fill_standard_message(msg, slotstr, expressions)
+                        elif vector_type == "int32" or vector_type == "int8":
+                            msg = int()
+                            msg = self.fill_standard_message(msg, slotstr, expressions)
+                        elif vector_type == "uint32" or vector_type == "uint8":
+                            msg = int()
+                            msg = self.fill_standard_message(msg, slotstr, expressions)
+                        elif vector_type == "bool":
+                            msg = bool()
+                            msg = self.fill_standard_message(msg, slotstr, expressions)
+                        else:
+                            msg = self.get_message_by_name(vector_type)
+                            self.fill_message_slots(msg, slotstr, expressions, 0)
                         tmp_vec = getattr(message, slot_name)
                         tmp_vec.append(msg)
                         setattr(message, slot_name, tmp_vec)
@@ -373,7 +411,25 @@ class ServiceCallerWidget(QWidget):
                 while(prnt):
                     pathname = prnt.text(0) + "/" + pathname
                     prnt = prnt.parent()
-                msg = roslib.message.get_message_class(item.text(1)[:-2])()
+                
+                # try:
+                # msg = roslib.message.get_message_class(item.text(1)[:-2])()
+
+                try:
+                    msg = roslib.message.get_message_class(item.text(1)[:-2])()
+                except ValueError:
+                    if item.text(1)[:-2] == "string":
+                        msg = str()
+                    elif item.text(1)[:-2] == "float64":
+                        msg = float()
+                    elif item.text(1)[:-2] == "int32" or item.text(1) == "int8":
+                        msg = int()
+                    elif item.text(1)[:-2] == "uint32" or item.text(1) == "uint8":
+                        msg = int()
+                    elif item.text(1)[:-2] == "bool":
+                        msg = bool()
+
+
                 name_str = pathname + item.text(0) + "[" + str(item.childCount()) + "]"
                 child_item = self._recursive_create_widget_items(item, name_str, item.text(1)[:-2], msg)
                 item.addChild(child_item)
